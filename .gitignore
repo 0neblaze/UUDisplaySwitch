@@ -1,0 +1,7 @@
+dist/
+native/bin/
+native/obj/
+tests/**/bin/
+tests/**/obj/
+*.user
+work/
