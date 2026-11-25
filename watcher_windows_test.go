@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestHeartbeatIdentityValidation(t *testing.T) {
@@ -90,48 +93,65 @@ func TestRapidRestartAndUpgradeDoNotTrigger(t *testing.T) {
 	}
 }
 
-func TestMonitorStopRequestIsBoundToFreshMonitorIdentity(t *testing.T) {
-	now := time.Now()
-	identity := monitorIdentity{PID: 42, Started: 123456, Token: "0123456789abcdef0123456789abcdef"}
-	request := monitorStopRequest{
-		PID: identity.PID, Started: identity.Started, MonitorToken: identity.Token,
-		RequestedAt: now.UnixNano(), RequestToken: "abcdef0123456789abcdef0123456789",
+func TestEvaluateUUCandidatesSkipsTransientPerPIDErrors(t *testing.T) {
+	const root = `c:\program files\netease\gameviewer\`
+	entries := []processCandidate{
+		{PID: 1001, Name: "gameviewer.exe"},
+		{PID: 1002, Name: "upgrade.exe"},
+		{PID: 1003, Name: "gameviewer.exe"},
 	}
-	if !request.matches(identity, now) {
-		t.Fatal("fresh matching request was rejected")
+	snap, handles, err := evaluateUUCandidates(root, entries, false, func(pid uint32, _ bool) (string, windows.Handle, error) {
+		switch pid {
+		case 1001:
+			return "", 0, windows.ERROR_INVALID_PARAMETER
+		case 1002:
+			return "", 0, windows.ERROR_ACCESS_DENIED
+		case 1003:
+			return root + "gameviewer.exe", 0, nil
+		default:
+			return "", 0, errors.New("unexpected pid")
+		}
+	})
+	if err != nil {
+		t.Fatalf("transient per-PID errors should not abort scan: %v", err)
 	}
-	if request.matches(monitorIdentity{PID: identity.PID + 1, Started: identity.Started, Token: identity.Token}, now) {
-		t.Fatal("request matched another PID")
+	if !snap.Running || snap.Updating || len(handles) != 0 {
+		t.Fatalf("unexpected snapshot/handles: %+v handles=%d", snap, len(handles))
 	}
-	if request.matches(monitorIdentity{PID: identity.PID, Started: identity.Started + 1, Token: identity.Token}, now) {
-		t.Fatal("request matched a reused PID")
-	}
-	if request.matches(monitorIdentity{PID: identity.PID, Started: identity.Started, Token: "fedcba9876543210fedcba9876543210"}, now) {
-		t.Fatal("request matched another monitor instance")
-	}
-	if request.matches(identity, now.Add(monitorStopRequestMaxAge+time.Nanosecond)) {
-		t.Fatal("expired request was accepted")
-	}
-	if request.matches(identity, now.Add(-time.Second)) {
-		t.Fatal("future-dated request was accepted")
+
+	if _, _, err := evaluateUUCandidates(root, entries[:1], false, func(uint32, bool) (string, windows.Handle, error) {
+		return "", 0, windows.ERROR_NOT_ENOUGH_MEMORY
+	}); err == nil {
+		t.Fatal("non-transient error should still fail scan")
 	}
 }
 
-func TestMonitorStopAcknowledgementIsBoundToRequest(t *testing.T) {
-	request := monitorStopRequest{
-		PID: 42, Started: 123456, MonitorToken: "0123456789abcdef0123456789abcdef",
-		RequestedAt: time.Now().UnixNano(), RequestToken: "abcdef0123456789abcdef0123456789",
+func TestIsValidTestNamespace(t *testing.T) {
+	for _, valid := range []string{"a", "validate-123", "NS_01.test-run", strings.Repeat("a", 32)} {
+		if !isValidTestNamespace(valid) {
+			t.Errorf("expected valid namespace %q", valid)
+		}
 	}
-	ack := monitorStopAck{
-		PID: request.PID, Started: request.Started, MonitorToken: request.MonitorToken,
-		RequestToken: request.RequestToken, StoppedAt: time.Now().UnixNano(),
+	for _, invalid := range []string{"", strings.Repeat("a", 33), "bad/ns", `bad\ns`, "has space", "中文"} {
+		if isValidTestNamespace(invalid) {
+			t.Errorf("expected invalid namespace %q", invalid)
+		}
 	}
-	if !ack.matches(request) {
-		t.Fatal("matching acknowledgement was rejected")
+}
+
+func TestIsTaskNotFoundError(t *testing.T) {
+	exitErr := &exec.ExitError{}
+	if !isTaskNotFoundError(exitErr, []byte("ERROR: The system cannot find the file specified.\r\n")) {
+		t.Fatal("expected English missing-task message to be recognized")
 	}
-	ack.RequestToken = "fedcba9876543210fedcba9876543210"
-	if ack.matches(request) {
-		t.Fatal("acknowledgement for another request was accepted")
+	if !isTaskNotFoundError(exitErr, []byte("错误: 系统找不到指定的文件。\r\n")) {
+		t.Fatal("expected Chinese missing-task message to be recognized")
+	}
+	if isTaskNotFoundError(exitErr, []byte("ERROR: Access is denied.\r\n")) {
+		t.Fatal("access denied must not be masked as missing task")
+	}
+	if isTaskNotFoundError(errors.New("exec missing"), []byte("cannot find the file specified")) {
+		t.Fatal("non-ExitError launch failure must not be masked as missing task")
 	}
 }
 
@@ -224,5 +244,65 @@ func TestUUExitCompletionRequiresKnownAbsentUU(t *testing.T) {
 				t.Fatalf("completionForUUState() = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStopWatchWithInProcessElevatedTrayMonitor(t *testing.T) {
+	const hostPID = uint32(99991)
+	id := monitorIdentity{PID: hostPID, Started: 123456789, Token: "0123456789abcdef0123456789abcdef"}
+	activeHB := heartbeat{PID: id.PID, Started: id.Started, Token: id.Token, Status: "armed"}
+	stoppedHB := heartbeat{PID: id.PID, Started: id.Started, Token: id.Token, Status: "stopped"}
+
+	stopped := false
+	closed := false
+	start := time.Now()
+	err := stopWatchWith(stopWatchDeps{
+		stopInProcess: func() {},
+		readHB: func() *heartbeat {
+			if stopped {
+				return &stoppedHB
+			}
+			return &activeHB
+		},
+		mutexExists: func() (bool, error) {
+			return !stopped, nil
+		},
+		openProc: func(got monitorIdentity) (windows.Handle, bool, error) {
+			if got != id {
+				t.Fatalf("unexpected identity: %+v", got)
+			}
+			return windows.Handle(0x1234), true, nil
+		},
+		signalStop: func() {
+			stopped = true
+		},
+		waitProc: func(_ windows.Handle, _ uint32) (uint32, error) {
+			// Simulate elevated --tray host staying alive after monitor stops.
+			return uint32(windows.WAIT_TIMEOUT), nil
+		},
+		closeProc: func(_ windows.Handle) error {
+			closed = true
+			return nil
+		},
+		selfPID: 11111,
+		timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("stopWatchWith failed against live host --tray process: %v", err)
+	}
+	if !stopped || !closed {
+		t.Fatalf("expected signalStop and closeProc to run: stopped=%v closed=%v", stopped, closed)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("stopWatchWith stalled for %s instead of confirming mutex release", elapsed)
+	}
+}
+
+func TestBuildCrossIntegritySACoversEventAndMutexAccess(t *testing.T) {
+	for _, access := range []uint32{eventAllAccess, mutexAllAccess} {
+		sa, err := buildCrossIntegritySA(access)
+		if err != nil || sa == nil || sa.SecurityDescriptor == nil {
+			t.Fatalf("buildCrossIntegritySA(0x%x) failed: sa=%v err=%v", access, sa, err)
+		}
 	}
 }

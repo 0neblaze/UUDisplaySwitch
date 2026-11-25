@@ -90,10 +90,6 @@ func validateIdentity(s deviceSnapshot) error {
 }
 
 func (nativeDevice) Set(enabled bool) error {
-	// Revalidate immediately before any mutation, including in the elevated helper.
-	if _, err := (nativeDevice{}).Read(); err != nil {
-		return err
-	}
 	node, err := locate()
 	if err != nil {
 		return err
@@ -154,21 +150,6 @@ func changeDevice(backend deviceBackend, mode string, attempts int, pause func()
 		pause()
 	}
 	return after, fmt.Errorf("切换请求已提交，但 Windows 尚未确认目标状态。请刷新检查；系统可能需要重启。")
-}
-
-func gameRunning() bool {
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
-	if err != nil {
-		return false
-	}
-	defer windows.CloseHandle(snapshot)
-	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
-	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
-		if strings.EqualFold(windows.UTF16ToString(entry.ExeFile[:]), "VALORANT-Win64-Shipping.exe") {
-			return true
-		}
-	}
-	return false
 }
 
 func applyNative(mode string) (deviceSnapshot, error) {

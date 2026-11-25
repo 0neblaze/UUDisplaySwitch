@@ -1,24 +1,48 @@
 param([string]$Destination = (Join-Path $PSScriptRoot 'dist\UUDisplaySwitch'))
 $ErrorActionPreference = 'Stop'
+
 $go = (Get-Command go -ErrorAction SilentlyContinue).Source
 if (-not $go) { $go = Join-Path $env:ProgramFiles 'Go\bin\go.exe' }
-$dotnet = (Get-Command dotnet -ErrorAction SilentlyContinue).Source
-if (-not $dotnet) { $dotnet = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe' }
-if (-not (Test-Path -LiteralPath $go) -or -not (Test-Path -LiteralPath $dotnet)) { throw 'Go and .NET SDK are required.' }
+if (-not (Test-Path -LiteralPath $go)) { throw 'Go toolchain is required.' }
+
 $Destination = [IO.Path]::GetFullPath($Destination)
-New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+$sysoPath = Join-Path $PSScriptRoot 'rsrc_windows_amd64.syso'
+$hadCgoEnv = Test-Path Env:CGO_ENABLED
+$prevCgoEnabled = $env:CGO_ENABLED
 Push-Location $PSScriptRoot
 try {
+    $env:CGO_ENABLED = '0'
+
     & $go test ./...
     if ($LASTEXITCODE -ne 0) { throw 'Go tests failed.' }
+
     & $go vet ./...
-    if ($LASTEXITCODE -ne 0) { throw 'Go analysis failed.' }
-    & $go build -trimpath -ldflags '-s -w -H windowsgui' -o (Join-Path $Destination 'UUDisplayCore.exe') .
-    if ($LASTEXITCODE -ne 0) { throw 'Go build failed.' }
-    & $dotnet publish native\UUDisplaySwitch.csproj -c Release -p:Platform=x64 -o $Destination -v minimal
-    if ($LASTEXITCODE -ne 0) { throw 'WinUI publish failed.' }
-    foreach ($name in @('UUDisplayCore.exe','UUDisplaySwitch.exe','UUDisplaySwitch.pri','App.xbf','app.ico')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Destination $name))) { throw "Missing published resource: $name" }
+    if ($LASTEXITCODE -ne 0) { throw 'Go vet analysis failed.' }
+
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force
     }
-    Write-Output "Published: $Destination"
-} finally { Pop-Location }
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+
+    & $go run ./internal/genrsrc -ico app.ico -manifest app.manifest -o $sysoPath
+    if ($LASTEXITCODE -ne 0) { throw 'PE resource (.syso) generation failed.' }
+
+    $outExe = Join-Path $Destination 'UUDisplaySwitch.exe'
+    & $go build -trimpath -ldflags '-s -w -H windowsgui' -o $outExe .
+    if ($LASTEXITCODE -ne 0) { throw 'Go build failed.' }
+
+    if (-not (Test-Path -LiteralPath $outExe)) {
+        throw "Missing published executable: $outExe"
+    }
+    Write-Output "Published: $outExe"
+} finally {
+    if ($hadCgoEnv) {
+        $env:CGO_ENABLED = $prevCgoEnabled
+    } else {
+        Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $sysoPath) {
+        Remove-Item -LiteralPath $sysoPath -Force -ErrorAction SilentlyContinue
+    }
+    Pop-Location
+}

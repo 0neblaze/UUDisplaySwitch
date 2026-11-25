@@ -30,6 +30,7 @@ type monitorLifecycleHarness struct {
 	completionAt    time.Time
 	dataDir         string
 	lastHeartbeat   heartbeat
+	heartbeats      []heartbeat
 	deps            monitorDeps
 }
 
@@ -77,7 +78,11 @@ func newMonitorLifecycleHarness(t *testing.T, preferences autoPreferences, scans
 		if readErr != nil {
 			return readErr
 		}
-		return json.Unmarshal(b, &h.lastHeartbeat)
+		if err := json.Unmarshal(b, &h.lastHeartbeat); err != nil {
+			return err
+		}
+		h.heartbeats = append(h.heartbeats, h.lastHeartbeat)
+		return nil
 	}
 	h.deps.writeCompletion = func(identity monitorIdentity, at int64) error {
 		h.completionCalls++
@@ -244,9 +249,40 @@ func TestMonitorLoopResetsDebounceForRestartUpdateAndEnumerationFailure(t *testi
 			if completed || len(h.disableCalls) != 0 || h.completionCalls != 0 {
 				t.Fatalf("transient state triggered action: completed=%v disable=%v completion=%d", completed, h.disableCalls, h.completionCalls)
 			}
-			if tc.name == "process enumeration failure" && h.lastHeartbeat.Error != "fake process enumeration failure" {
-				t.Fatalf("enumeration error was not preserved: %+v", h.lastHeartbeat)
+			if tc.name == "process enumeration failure" {
+				sawErr := false
+				for _, hb := range h.heartbeats {
+					if hb.Status == "error" && hb.Error == "fake process enumeration failure" {
+						sawErr = true
+						break
+					}
+				}
+				if !sawErr {
+					t.Fatalf("enumeration error was never recorded in heartbeat history: %+v", h.heartbeats)
+				}
+				if h.lastHeartbeat.Status != "grace" || h.lastHeartbeat.Error != "" {
+					t.Fatalf("transient scan error did not recover cleanly: %+v", h.lastHeartbeat)
+				}
 			}
 		})
+	}
+}
+
+func TestMonitorLoopTransientScanErrorRecoveryFromWaiting(t *testing.T) {
+	scans := []monitorScanResult{
+		{state: uuSnapshot{}},
+		{err: errors.New("transient snapshot glitch")},
+		{state: uuSnapshot{}},
+	}
+	h := newMonitorLifecycleHarness(t, autoPreferences{AutoDisable: true}, scans, monitorScanResult{}, 6*time.Second, nil)
+	completed, err := h.run(testMonitorIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed || len(h.disableCalls) != 0 {
+		t.Fatalf("unexpected completion/disable on waiting recovery: completed=%v disable=%v", completed, h.disableCalls)
+	}
+	if h.lastHeartbeat.Status != "waiting" || h.lastHeartbeat.Error != "" {
+		t.Fatalf("monitor stuck in error after scan recovery: %+v", h.lastHeartbeat)
 	}
 }

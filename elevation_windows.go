@@ -36,6 +36,34 @@ type shellExecuteInfo struct {
 
 func elevated() bool { r, _, _ := isUserAdmin.Call(); return r != 0 }
 
+func launchElevated(parameters string, owner uintptr) (windows.Handle, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return 0, err
+	}
+	verb, _ := windows.UTF16PtrFromString("runas")
+	file, _ := windows.UTF16PtrFromString(exe)
+	args, _ := windows.UTF16PtrFromString(parameters)
+	info := shellExecuteInfo{
+		Mask:       0x40 | 0x100 | 0x400,
+		Window:     owner,
+		Verb:       verb,
+		File:       file,
+		Parameters: args,
+		Show:       0,
+		Size:       uint32(unsafe.Sizeof(shellExecuteInfo{})),
+	}
+	r, _, callErr := shellExecuteEx.Call(uintptr(unsafe.Pointer(&info)))
+	runtime.KeepAlive(verb)
+	runtime.KeepAlive(file)
+	runtime.KeepAlive(args)
+	runtime.KeepAlive(&info)
+	if r == 0 {
+		return 0, callErr
+	}
+	return info.Process, nil
+}
+
 func performChange(mode string, owner uintptr) error {
 	if mode != "enable" && mode != "disable" {
 		return errors.New("无效的操作。")
@@ -43,27 +71,18 @@ func performChange(mode string, owner uintptr) error {
 	if elevated() {
 		return runHelper(mode)
 	}
-	exe, err := os.Executable()
+	proc, err := launchElevated("--apply "+mode, owner)
 	if err != nil {
-		return err
-	}
-	verb, _ := windows.UTF16PtrFromString("runas")
-	file, _ := windows.UTF16PtrFromString(exe)
-	args, _ := windows.UTF16PtrFromString("--apply " + mode)
-	info := shellExecuteInfo{Mask: 0x40 | 0x100 | 0x400, Window: owner, Verb: verb, File: file, Parameters: args, Show: 0}
-	info.Size = uint32(unsafe.Sizeof(info))
-	r, _, callErr := shellExecuteEx.Call(uintptr(unsafe.Pointer(&info)))
-	if r == 0 {
-		if errors.Is(callErr, windows.ERROR_CANCELLED) {
+		if errors.Is(err, windows.ERROR_CANCELLED) {
 			return errors.New("已取消管理员授权，设备未切换。")
 		}
-		return fmt.Errorf("无法请求管理员权限：%w", callErr)
+		return fmt.Errorf("无法请求管理员权限：%w", err)
 	}
-	if info.Process == 0 {
+	if proc == 0 {
 		return errors.New("无法取得切换进程，未确认结果。请刷新设备状态。")
 	}
-	defer windows.CloseHandle(info.Process)
-	wait, err := windows.WaitForSingleObject(info.Process, 60000)
+	defer windows.CloseHandle(proc)
+	wait, err := windows.WaitForSingleObject(proc, 60000)
 	if err != nil {
 		return err
 	}
@@ -71,7 +90,7 @@ func performChange(mode string, owner uintptr) error {
 		return errors.New("设备切换进程仍未结束，请稍后刷新状态。为避免冲突，暂勿重复切换。")
 	}
 	var code uint32
-	if err = windows.GetExitCodeProcess(info.Process, &code); err != nil {
+	if err = windows.GetExitCodeProcess(proc, &code); err != nil {
 		return err
 	}
 	if code != 0 {

@@ -1,47 +1,47 @@
 # UUDisplaySwitch
 
-Windows 桌面工具，用于切换网易 UU 远程中的虚拟显示适配器，并可在 UU 退出时执行用户启用的自动化操作。项目由 Go 设备与后台核心、C# WinUI 3 界面组成，支持浅色/深色主题、三种界面语言和系统托盘。
+极简原生 Windows 系统托盘工具，用于快速切换网易 UU 远程虚拟显示适配器（`GameViewer Virtual Display Adapter`，`ROOT\DISPLAY\0000`），解决开启虚拟屏后导致《无畏契约》（VALORANT）等全屏独占游戏分辨率或全屏显示异常的问题，并支持在 UU 退出后执行自动化操作。
+
+全量采用纯 Go + Win32 原生 API 单文件构建，彻底移除 WinUI 3 与 .NET 运行时依赖，支持浅色/深色主题、三种语言（简中/繁中/英文）与事件驱动零轮询驻留。
 
 本项目由个人独立开发，与网易及 UU 官方无关。
 
-## 兼容范围与限制
+## 极简交互方式
 
-- 构建目标为 Windows x64；项目主要面向 Windows 11。
-- 当前实现只接受源码中配置的一个**精确设备实例身份**，并同时校验设备类别。身份不符时会拒绝操作，不会退化为按设备名称模糊匹配。
-- 该设备身份来自单一环境。本项目尚未验证适用于其他电脑、驱动版本或适配器实例；更换环境前，必须先核对目标设备的精确身份并重新验证设备操作。
-- 本工具不是安装包。构建会生成包含运行所需文件的自包含目录，运行时请保留整个目录。
-- 2.2.5 修复了轮询启动反馈光标的问题，子进程启动标志已验证；当前环境未能完成“可见光标”视觉对照，因此不把该视觉检查记作通过。
+- **双击 `UUDisplaySwitch.exe` 启动**：默认不弹出任何常驻主窗口，直接在任务栏通知区域（系统托盘）显示图标（绿色角标 = 已开启，灰色角标 = 已关闭）。
+  - *注：Windows 11 默认将新托盘图标折叠在右下角 `^` 溢出面板内；首次使用可在「系统设置 -> 个性化 -> 任务栏 -> 其他系统托盘图标」中开启常显。*
+- **左键单击托盘图标**：直接切换虚拟显示适配器的开启/关闭状态（本地未运行 `GameViewer.exe` 时无确认秒切；检测到 UU 远程运行且执行关闭时弹出原生防黑屏确认框）。
+- **右键单击托盘图标**：打开深浅色自适应菜单，可打开**设置窗口**（关闭即彻底销毁释放全部 UI 资源）或**退出**（停止后台监测并移除图标）。
 
-## 功能
+## 核心功能与低占用设计
 
-- 查看并启用/禁用目标虚拟显示适配器。
-- 可选在 UU 退出后禁用适配器、退出本工具，或同时执行两项操作。
-- 可选在当前用户登录时启动后台监测；默认关闭。
-- 主窗口可收纳到系统托盘；通过托盘菜单重新打开或退出。
-- 配置和运行记录保存在当前 Windows 用户的 `%LOCALAPPDATA%\UUDisplaySwitch` 目录。
-
-## 权限与设备操作
-
-查看状态不需要改变设备。启用/禁用设备以及配置登录后台时，Windows 会按需显示用户账户控制（UAC）提权提示。后台登录任务只在用户主动启用后创建；程序不保存 Windows 密码。关闭登录后台选项会移除后续登录触发，但不会强制结束当前已经运行的监测。
-
-设备开关会影响实际显示适配器。使用前请确认本机目标设备身份与源码中的精确配置一致；身份不符时应停止操作并先审查适配器，不要通过名称匹配绕过检查。
+- **精确设备身份保护**：严格锁定 `InstanceID == ROOT\DISPLAY\0000`、`GameViewer Virtual Display Adapter` 与显示适配器类别 GUID，绝不触碰物理独立/核心显卡。
+- **事件驱动零空闲轮询**：设备状态通过 `CM_Register_Notification` 内核通知实时同步；当 UU 远程运行时直接对进程句柄执行内核 `WaitForMultipleObjects(INFINITE)` 零唤醒阻塞等待；状态文件仅在状态跃迁时写入磁盘。
+- **单文件便携分发**：图标与 `PerMonitorV2` / `ComCtl32 v6` 清单直接内嵌于单个 `UUDisplaySwitch.exe`（约 `3.4 MiB`），无需额外运行库或外部资源文件。
+- **可选开机监测**：启用「开机登录时自动启动后台监测」后，会将可执行文件复制到受 ACL 保护的 `%ProgramFiles%\UUDisplaySwitch\<UserSID>\` 目录并校验 SHA-256，注册登录后延迟 10 秒触发的计划任务。
 
 ## 构建
 
-在 Windows x64 上安装 PowerShell 7、Go 1.26 或更新版本、.NET 10 SDK，以及 Windows SDK 和所需的 Visual C++ 构建工具。项目固定使用 Windows App SDK 1.8.260921001 与 Windows SDK Build Tools 10.0.28000.2705。
-
-在仓库根目录运行：
+仅需安装 PowerShell 与 Go（1.26 或更高版本），无需安装 .NET SDK 或 Windows App SDK：
 
 ```powershell
 pwsh -NoProfile -File .\build.ps1
 ```
 
-脚本运行 `go test ./...`、`go vet ./...`，构建 Go 核心并发布 WinUI 应用。默认输出目录为 `dist\UUDisplaySwitch`。请将整个输出目录一起保留；只复制主界面可执行文件无法运行。
+脚本依次执行 `go test ./...`、`go vet ./...`、内嵌 PE 图标与清单资源（`./internal/genrsrc`），并在 `dist\UUDisplaySwitch\UUDisplaySwitch.exe` 生成单文件可执行程序。
 
-## 数据位置
+## 验证
 
-设置、监测心跳和操作/诊断日志位于 `%LOCALAPPDATA%\UUDisplaySwitch`。记录可能包含进程标识、时间戳、设备操作结果和错误信息。提交问题时请先检查并清理个人信息；本仓库不需要这些运行记录。
+- **只读 UI 与句柄泄漏自检**（隔离命名空间，不改动真实设备、设置或开机任务）：
+  ```powershell
+  .\dist\UUDisplaySwitch\UUDisplaySwitch.exe --read-only --validate-ui
+  ```
+- **状态查询与内存采样**：
+  ```powershell
+  .\dist\UUDisplaySwitch\UUDisplaySwitch.exe --status
+  pwsh -NoProfile -File .\tests\windows\Measure-Memory.ps1 -Label tray -OutputPath .\work\memory-tray.json -RequireWindowProcessAbsent
+  ```
 
-## 许可与第三方组件
+## 数据位置与许可
 
-本项目自有源码和资源按 [MIT License](LICENSE) 发布。第三方依赖、其许可及构建产物的分发说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。仓库只发布源码，不包含 `dist`、`work`、`bin`、`obj`、用户设置、日志或构建运行库。
+设置（`settings.json`）、监测状态（`monitor.json`）和操作记录（`actions.jsonl`）位于 `%LOCALAPPDATA%\UUDisplaySwitch`。自有源码按 [MIT License](LICENSE) 发布，第三方依赖说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
