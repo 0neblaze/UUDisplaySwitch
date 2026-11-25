@@ -41,8 +41,7 @@ const (
 	niifError     = 0x00000003
 	notifyVersion4 = 4
 
-	imageIcon      = 1
-	lrLoadFromFile = 0x00000010
+	imageIcon = 1
 
 	wsPopup        = 0x80000000
 	wsExToolWindow = 0x00000080

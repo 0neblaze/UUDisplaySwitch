@@ -20,25 +20,27 @@
 - **单文件便携分发**：图标与 `PerMonitorV2` / `ComCtl32 v6` 清单直接内嵌于单个 `UUDisplaySwitch.exe`（约 `3.4 MiB`），无需额外运行库或外部资源文件。
 - **可选开机监测**：启用「开机登录时自动启动后台监测」后，会将可执行文件复制到受 ACL 保护的 `%ProgramFiles%\UUDisplaySwitch\<UserSID>\` 目录并校验 SHA-256，注册登录后延迟 10 秒触发的计划任务。
 
-## 构建
+## 下载与构建
 
-仅需安装 PowerShell 与 Go（1.26 或更高版本），无需安装 .NET SDK 或 Windows App SDK：
+可直接从 GitHub Releases 下载独立的单文件 `UUDisplaySwitch.exe`，放到任意位置双击即可运行（无需安装运行库或附带其他资源文件）。
+
+如需从源码构建，仅需安装 PowerShell 与 Go（1.26 或更高版本）：
 
 ```powershell
 pwsh -NoProfile -File .\build.ps1
 ```
 
-脚本依次执行 `go test ./...`、`go vet ./...`、内嵌 PE 图标与清单资源（`./internal/genrsrc`），并在 `dist\UUDisplaySwitch\UUDisplaySwitch.exe` 生成单文件可执行程序。
+脚本依次执行 `go test ./...`、`go vet ./...`、内嵌 PE 图标与清单资源（`./internal/genrsrc`），并在 `dist\UUDisplaySwitch.exe` 输出独立的单文件可执行程序。
 
 ## 验证
 
 - **只读 UI 与句柄泄漏自检**（隔离命名空间，不改动真实设备、设置或开机任务）：
   ```powershell
-  .\dist\UUDisplaySwitch\UUDisplaySwitch.exe --read-only --validate-ui
+  .\dist\UUDisplaySwitch.exe --read-only --validate-ui
   ```
 - **状态查询与内存采样**：
   ```powershell
-  .\dist\UUDisplaySwitch\UUDisplaySwitch.exe --status
+  .\dist\UUDisplaySwitch.exe --status
   pwsh -NoProfile -File .\tests\windows\Measure-Memory.ps1 -Label tray -OutputPath .\work\memory-tray.json -RequireWindowProcessAbsent
   ```
 

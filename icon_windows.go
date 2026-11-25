@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/binary"
 	"math"
-	"os"
-	"path/filepath"
 	"runtime"
 	"unsafe"
 
@@ -141,17 +139,9 @@ func loadEmbeddedIconAtSize(targetSize int32) uintptr {
 			}
 		}
 	}
-	// Fallback to embedded PE resource #1 or sibling app.ico file if needed.
+	// Fallback to embedded PE resource #1.
 	if mod, _, _ := procGetModuleHandleW.Call(0); mod != 0 {
 		if hIcon, _, _ := procLoadImageW.Call(mod, 1, imageIcon, uintptr(targetSize), uintptr(targetSize), 0); hIcon != 0 {
-			return hIcon
-		}
-	}
-	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), "app.ico")
-		if ptr, err := windows.UTF16PtrFromString(p); err == nil {
-			hIcon, _, _ := procLoadImageW.Call(0, uintptr(unsafe.Pointer(ptr)), imageIcon, uintptr(targetSize), uintptr(targetSize), lrLoadFromFile)
-			runtime.KeepAlive(ptr)
 			return hIcon
 		}
 	}

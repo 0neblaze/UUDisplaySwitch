@@ -1,4 +1,4 @@
-param([string]$Destination = (Join-Path $PSScriptRoot 'dist\UUDisplaySwitch'))
+param([string]$Destination = (Join-Path $PSScriptRoot 'dist\UUDisplaySwitch.exe'))
 $ErrorActionPreference = 'Stop'
 
 $go = (Get-Command go -ErrorAction SilentlyContinue).Source
@@ -6,6 +6,14 @@ if (-not $go) { $go = Join-Path $env:ProgramFiles 'Go\bin\go.exe' }
 if (-not (Test-Path -LiteralPath $go)) { throw 'Go toolchain is required.' }
 
 $Destination = [IO.Path]::GetFullPath($Destination)
+if ($Destination.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase)) {
+    $outExe = $Destination
+    $outDir = Split-Path -Parent $outExe
+} else {
+    $outDir = $Destination
+    $outExe = Join-Path $outDir 'UUDisplaySwitch.exe'
+}
+
 $sysoPath = Join-Path $PSScriptRoot 'rsrc_windows_amd64.syso'
 $hadCgoEnv = Test-Path Env:CGO_ENABLED
 $prevCgoEnabled = $env:CGO_ENABLED
@@ -19,15 +27,15 @@ try {
     & $go vet ./...
     if ($LASTEXITCODE -ne 0) { throw 'Go vet analysis failed.' }
 
-    if (Test-Path -LiteralPath $Destination) {
-        Remove-Item -LiteralPath $Destination -Recurse -Force
+    $defaultDist = Join-Path $PSScriptRoot 'dist'
+    if ($outDir -eq $defaultDist -and (Test-Path -LiteralPath $defaultDist)) {
+        Remove-Item -LiteralPath $defaultDist -Recurse -Force
     }
-    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
     & $go run ./internal/genrsrc -ico app.ico -manifest app.manifest -o $sysoPath
     if ($LASTEXITCODE -ne 0) { throw 'PE resource (.syso) generation failed.' }
 
-    $outExe = Join-Path $Destination 'UUDisplaySwitch.exe'
     & $go build -trimpath -ldflags '-s -w -H windowsgui' -o $outExe .
     if ($LASTEXITCODE -ne 0) { throw 'Go build failed.' }
 
